@@ -57,6 +57,11 @@ User uploaded a single-file HTML app called **Midget jr.** — a self-growing kn
 - ✅ Helpful error messages when API key is missing (points user to free signup URL)
 - ✅ Testing subagent verified: 11/11 backend tests pass, all critical frontend flows pass
 - ✅ **Deploy artifacts written:** `backend/Dockerfile`, `render.yaml`, `frontend/vercel.json`, `DEPLOY.md` (step-by-step click-by-click guide)
+- ✅ **Live on Gemini 2.5 Flash** (free tier — gemini-2.0-flash was demoted by Google so we use 2.5)
+- ✅ **`.env` and `backend/.env` added to .gitignore** + `.env.example` committed (prevents API key leak when pushing)
+- ✅ **Public-share-friendly:** welcome message now explains visitors can chat/query/research, only admin can import/manage queue
+- ✅ **Downloadable code:** every Code-tab output has a ⬇ Download button (correct extension + MIME per language: html, css, js, py, json, md, etc.)
+- ✅ **Persistent chat archive:** every exchange (user + bot) silently saved to localStorage (`mj_chat_archive`, cap 5000). Reload shows clean welcome (no replay). Header 📜 History button opens a date-grouped, searchable modal with Export-JSON and Clear-history actions.
 
 ## What's Waiting On the User
 - 🟡 **Gemini API key** — user said they'd grab one at aistudio.google.com/apikey and paste it. Once pasted into `GEMINI_API_KEY` env, all LLM features come alive. Backend returns a friendly error pointing at the signup URL until then.

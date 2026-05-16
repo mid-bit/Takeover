@@ -3,8 +3,25 @@ import "./App.css";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 const UNLOCK_KEY = "mj_token";
-const HISTORY_KEY = "mj_chat_history";
+const HISTORY_KEY = "mj_chat_history";   // rolling short window for LLM context
+const ARCHIVE_KEY = "mj_chat_archive";   // full lifetime history (hidden, opens via 📜)
 const MAX_FILE_BYTES = 1024 * 1024;
+
+// Filename extension per language (used for the Code-tab Download button)
+const EXT_MAP = {
+  python: "py", javascript: "js", typescript: "ts", java: "java",
+  "c++": "cpp", go: "go", rust: "rs", sql: "sql", bash: "sh",
+  html: "html", css: "css", json: "json", markdown: "md",
+};
+
+const downloadText = (filename, text, mime = "text/plain") => {
+  const blob = new Blob([text], { type: `${mime};charset=utf-8` });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
 
 const MODE_COLORS = {
   chat: "#f38ba8", query: "#89b4fa", research: "#a6e3a1",
@@ -14,7 +31,7 @@ const MODE_LABELS = {
   chat: "💬 Chat — ask me anything, I'll use my knowledge base + AI",
   query: "🔍 Query — search exact entries in the knowledge base",
   research: "🌐 Research — fetch info from the web (Google) and save it",
-  code: "💻 Code — generate code with AI",
+  code: "💻 Code — generate code with AI (download any file type)",
   import: "📂 Import — upload files to grow Midget's brain (admin)",
   queue: "📋 Queue — topics scheduled for auto-research every 6 hours",
 };
@@ -22,10 +39,10 @@ const MODE_PLACEHOLDERS = {
   chat: "Ask me anything...",
   query: "Search the knowledge base...",
   research: "Enter a topic to research from the web...",
-  code: "Describe the code you need...",
+  code: "Describe the code you need... (try: 'an HTML page with a counter button')",
 };
 
-const LANGS = ["python","javascript","typescript","java","c++","go","rust","sql","bash"];
+const LANGS = ["python","javascript","typescript","java","c++","go","rust","sql","bash","html","css","json","markdown"];
 const CATEGORIES = ["General","Science","Technology","History","Math","Health","Philosophy","Art"];
 const ACCEPT = ".txt,.md,.markdown,.json,.csv,.log,.yaml,.yml,.xml,.html,.htm,.css,.js,.mjs,.ts,.tsx,.jsx,.py,.go,.rs,.java,.cpp,.cc,.c,.h,.hpp,.sh,.bash,.sql,.toml,.ini,.conf,.rb,.php,.swift,.kt";
 
@@ -34,6 +51,20 @@ const loadHistory = () => {
   catch { return []; }
 };
 const saveHistory = (h) => { try { localStorage.setItem(HISTORY_KEY, JSON.stringify(h)); } catch {} };
+const loadArchive = () => {
+  try { const x = JSON.parse(localStorage.getItem(ARCHIVE_KEY) || "[]"); return Array.isArray(x) ? x : []; }
+  catch { return []; }
+};
+const appendArchive = (entries) => {
+  try {
+    const a = loadArchive();
+    a.push(...entries);
+    // Cap to ~5000 entries to keep storage manageable
+    const trimmed = a.length > 5000 ? a.slice(-5000) : a;
+    localStorage.setItem(ARCHIVE_KEY, JSON.stringify(trimmed));
+  } catch {}
+};
+const clearArchive = () => { try { localStorage.removeItem(ARCHIVE_KEY); } catch {} };
 const getToken = () => sessionStorage.getItem(UNLOCK_KEY) || "";
 const setToken = (t) => t ? sessionStorage.setItem(UNLOCK_KEY, t) : sessionStorage.removeItem(UNLOCK_KEY);
 
@@ -117,13 +148,90 @@ function CodeBlock({ code, lang }) {
     navigator.clipboard.writeText(code || "").catch(()=>{});
     setCopied(true); setTimeout(()=>setCopied(false), 2000);
   };
+  const onDownload = () => {
+    const ext = EXT_MAP[lang] || "txt";
+    const mime = lang === "html" ? "text/html" : lang === "css" ? "text/css" : lang === "json" ? "application/json" : "text/plain";
+    const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    downloadText(`midget-${lang}-${ts}.${ext}`, code || "", mime);
+  };
   return (
     <div className="code-wrap">
       <div className="code-lang">{lang}</div>
       <pre className="code-block">{code}</pre>
-      <button className={"copy-btn" + (copied ? " copied" : "")} onClick={onCopy} data-testid="copy-code-btn">
-        {copied ? "✓ Copied" : "Copy"}
-      </button>
+      <div className="code-actions">
+        <button className="copy-btn" onClick={onDownload} data-testid="download-code-btn" title="Download file">⬇ Download</button>
+        <button className={"copy-btn" + (copied ? " copied" : "")} onClick={onCopy} data-testid="copy-code-btn">
+          {copied ? "✓ Copied" : "Copy"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function HistoryPanel({ onClose }) {
+  const [items, setItems] = useState(() => loadArchive());
+  const [q, setQ] = useState("");
+  const filtered = useMemo(() => {
+    if (!q.trim()) return items;
+    const needle = q.toLowerCase();
+    return items.filter(m => (m.content || "").toLowerCase().includes(needle));
+  }, [q, items]);
+  const grouped = useMemo(() => {
+    // Group by date (YYYY-MM-DD)
+    const byDay = new Map();
+    filtered.forEach(m => {
+      const d = (m.at || "").slice(0, 10) || "unknown";
+      if (!byDay.has(d)) byDay.set(d, []);
+      byDay.get(d).push(m);
+    });
+    return Array.from(byDay.entries()).reverse(); // newest day first
+  }, [filtered]);
+
+  const onClear = () => {
+    if (window.confirm("Clear ALL stored chat history? This can't be undone.")) {
+      clearArchive(); setItems([]);
+    }
+  };
+  const onExport = () => {
+    const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    downloadText(`midget-chat-history-${ts}.json`, JSON.stringify(items, null, 2), "application/json");
+  };
+
+  return (
+    <div className="modal-bg" onClick={(e)=>{ if(e.target.classList.contains("modal-bg")) onClose(); }}>
+      <div className="modal history-modal" role="dialog">
+        <div className="history-head">
+          <h2>📜 Chat history</h2>
+          <span className="history-count">{items.length} message{items.length===1?"":"s"} saved</span>
+        </div>
+        <input
+          className="qinput"
+          placeholder="Search past messages..."
+          value={q}
+          onChange={(e)=>setQ(e.target.value)}
+          data-testid="history-search"
+          style={{ width: "100%", marginBottom: 10 }}
+        />
+        <div className="history-list">
+          {grouped.length === 0 && <div className="empty-state">Nothing in history yet.</div>}
+          {grouped.map(([day, msgs]) => (
+            <div key={day} className="history-day">
+              <div className="history-day-label">{day}</div>
+              {msgs.map((m, i) => (
+                <div key={i} className={"history-msg " + m.role}>
+                  <span className="history-msg-who">{m.role === "user" ? "you" : "🧠 midget"}</span>
+                  <span className="history-msg-text">{m.content}</span>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+        <div className="actions">
+          <button className="btn-cancel" type="button" onClick={onExport}>⬇ Export JSON</button>
+          <button className="btn-cancel" type="button" onClick={onClear} style={{ color: "#f38ba8" }}>Clear history</button>
+          <button className="qbtn" type="button" onClick={onClose}>Close</button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -181,21 +289,21 @@ export default function App() {
   const [iTags, setITags] = useState("");
   const [importRows, setImportRows] = useState([]);
   const [dragOver, setDragOver] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
   const fileInputRef = useRef(null);
   const messagesEnd = useRef(null);
   const taRef = useRef(null);
 
-  // Seed greeting from history or default
+  // Clean welcome on every load — past chats live silently in archive until 📜 opens them.
   useEffect(() => {
     if (messages.length === 0) {
-      if (history.length === 0) {
-        setMessages([{
-          role: "bot",
-          content: "Hey! I'm Midget jr. 🧠\n\nUse the tabs above to switch modes:\n• 💬 Chat — talk to me, I answer using AI + my knowledge base\n• 🔍 Query — search raw entries in the knowledge base\n• 🌐 Research — fetch & save new info from Google\n• 💻 Code — generate code in any language\n• 📂 Import — upload files to grow my brain (admin)\n• 📋 Queue — topics scheduled for auto-research every 6 hours"
-        }]);
-      } else {
-        setMessages(history.slice(-6).map(m => ({ role: m.role === "user" ? "user" : "bot", content: m.content })));
-      }
+      const archived = loadArchive().length;
+      const visitorHint = "\n\n🔗 Share this link with anyone — they can chat, query, and trigger research (the bot grows from every research call). Only the admin can import files or manage the queue.";
+      const historyHint = archived > 0 ? `\n\n📜 ${archived} past message${archived===1?"":"s"} saved — tap the history button above to browse them.` : "";
+      setMessages([{
+        role: "bot",
+        content: "Hey! I'm Midget jr. 🧠\n\nUse the tabs above to switch modes:\n• 💬 Chat — talk to me, I answer using AI + my knowledge base\n• 🔍 Query — search raw entries in the knowledge base\n• 🌐 Research — fetch & save new info from Google\n• 💻 Code — generate code in any language (downloadable)\n• 📂 Import — upload files to grow my brain (admin)\n• 📋 Queue — topics scheduled for auto-research every 6 hours" + visitorHint + historyHint
+      }]);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -227,29 +335,44 @@ export default function App() {
     setText(""); if (taRef.current) taRef.current.style.height = "auto";
     pushUser(t);
     setTyping(true);
+    const now = new Date().toISOString();
+    const archiveBuf = [{ role: "user", content: t, mode, at: now }];
     try {
       if (mode === "chat") {
         const r = await api("/chat", { method: "POST", body: { message: t, history } });
         pushBot({ content: r.reply, ctx: r.context_used });
+        archiveBuf.push({ role: "bot", content: r.reply, mode, at: new Date().toISOString() });
         const h2 = [...history, { role: "user", content: t }, { role: "assistant", content: r.reply }];
         while (h2.length > 12) h2.splice(0, 2);
         setHistory(h2); saveHistory(h2);
       } else if (mode === "query") {
         const r = await api("/query", { method: "POST", body: { query: t } });
-        if (r.results?.length) pushBot({ content: `Found ${r.result_count} result(s):`, results: r.results });
-        else pushBot({ content: `🤷 Nothing in the knowledge base about "${t}" yet.\n\nTip: switch to 🌐 Research, or 📂 Import a file.` });
+        if (r.results?.length) {
+          pushBot({ content: `Found ${r.result_count} result(s):`, results: r.results });
+          archiveBuf.push({ role: "bot", content: `Found ${r.result_count} result(s): ${r.results.map(x=>x.topic).join(", ")}`, mode, at: new Date().toISOString() });
+        } else {
+          const m = `🤷 Nothing in the knowledge base about "${t}" yet.\n\nTip: switch to 🌐 Research, or 📂 Import a file.`;
+          pushBot({ content: m });
+          archiveBuf.push({ role: "bot", content: m, mode, at: new Date().toISOString() });
+        }
       } else if (mode === "research") {
         const r = await api("/research", { method: "POST", body: { topic: t, category: "General" } });
-        pushBot({ content: r.sources_found > 0
+        const m = r.sources_found > 0
           ? `✅ Researched and saved!\n\nTopic: ${r.topic}\nSources: ${r.sources_found}\n\n${r.summary || ""}`
-          : `📌 Saved "${t}" — no web sources found, you may want to try a more specific query.` });
+          : `📌 Saved "${t}" — no web sources found, you may want to try a more specific query.`;
+        pushBot({ content: m });
+        archiveBuf.push({ role: "bot", content: m, mode, at: new Date().toISOString() });
       } else if (mode === "code") {
         const r = await api("/code", { method: "POST", body: { prompt: t, language: lang } });
         pushBot({ content: `Here's your ${lang} code:`, code: r.code, lang });
+        archiveBuf.push({ role: "bot", content: `[${lang} code]\n${r.code}`, mode, at: new Date().toISOString() });
       }
     } catch (e) {
-      pushBot({ content: `❌ Error: ${e.message}` });
+      const m = `❌ Error: ${e.message}`;
+      pushBot({ content: m });
+      archiveBuf.push({ role: "bot", content: m, mode, at: new Date().toISOString() });
     }
+    appendArchive(archiveBuf);
     setTyping(false);
   };
 
@@ -349,6 +472,9 @@ export default function App() {
           <h1>Midget jr.</h1>
           <p>Self-growing · Research · Chat · Code</p>
         </div>
+        <button id="history-btn" onClick={()=>setShowHistory(true)} data-testid="history-btn" title="Past chats">
+          <span>📜</span><span>History</span>
+        </button>
         <button id="lock-toggle" className={unlocked ? "unlocked" : ""} onClick={toggleLock} data-testid="lock-toggle">
           <span>{unlocked ? "🔓" : "🔒"}</span>
           <span>{unlocked ? "Unlocked" : "Locked"}</span>
@@ -499,6 +625,8 @@ export default function App() {
           onUnlock={pwPrompt.onSuccess}
         />
       )}
+
+      {showHistory && <HistoryPanel onClose={()=>setShowHistory(false)}/>}
     </div>
   );
 }
